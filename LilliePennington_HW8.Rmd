@@ -1,0 +1,202 @@
+---
+title: "HW 8"
+author: "Lillie Pennington"
+date: "May 1, 2018"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(purrr)
+library(lubridate)
+library(broom)
+```
+
+
+#getting started
+```{r}
+data(Nile)
+Nile
+class(Nile)
+
+```
+##1. What is the class of Nile? What is the time interval of the time series?
+Ts, time series; 20 years
+
+```{r}
+setwd("ca_ozone")
+
+o3.filenames <- list.files(pattern = ".txt")
+o3.filelist <- lapply(o3.filenames, read_delim, delim = "|")
+
+
+daily.mean <- function(df) {
+  df %>% 
+  group_by(site = as.factor(site), date) %>% 
+  summarize(o3 = mean(obs, na.rm = TRUE)) %>% 
+  drop_na()  
+  }
+d <- map(o3.filelist, daily.mean)
+d
+```
+##2. ts() only handles regularly spaced time series data. How do we deal with irregularly spaced time series? Do some internet research and describe some options, as well as pitfalls or limitations.
+is.irts() tests whether an object is an irregularly spaced time series—first step is to determine if the time series is irregular~
+from https://stackoverflow.com/questions/38723185/how-to-turn-interpolate-this-irregularly-spaced-time-series-into-a-regularly-s?utm_medium=organic&utm_source=google_rich_qa&utm_campaign=google_rich_qa: make a dummy series and merge it with the original, fill in missing values with linearly interpolated values. This is a questionable method because it may make your results badly biased, as it’s difficult to tell whether or not the interpolated points come from the same distribution as the original dataset.
+
+https://cran.r-project.org/web/packages/lomb/lomb.pdf: Lomb-Scargle Periodogram; “The Lomb-Scargle periodogram is the most wideley used method to detect even weak periodoc components in unequally sampled time series. It can also be used for equally sampled time series”
+Weak, because it doesn’t work for multiple frequencies, so maximum peak heights across multiple frequencies must be approximated
+
+http://www.eckner.com/papers/Algorithms%20for%20Unevenly%20Spaced%20Time%20Series.pdf
+This seems like a good and thorough resource for unequal timeseries.
+
+
+```{r}
+filter.station <- function(df, x) {
+  df %>% 
+  filter(site == x)
+}
+sb.o3 <- map(d, filter.station, 2008)
+sb.o3
+
+sb <- sb.o3 %>% 
+  bind_rows()
+
+
+ggplot(sb, aes(x = date, y = o3)) + geom_line()
+
+sb.ts <- ts(sb$o3, start = c(1980,1), frequency = 365.25)
+acf(sb.ts)
+
+
+sb$mo <- as.factor(lubridate::month(sb$date))
+ggplot(sb, aes(x = mo, y = o3, group = mo)) + geom_boxplot()
+
+
+sb$yr <- year(sb$date)
+sb.mo <- sb %>%
+  select(-site, -date) %>% 
+  group_by(yr, mo) %>% 
+  summarize(o3 = median(o3))
+
+ggplot(sb.mo, aes(x = mo, y = o3, group = mo)) + geom_boxplot()
+```
+
+```{r}
+sb.mo.ts <- ts(sb.mo$o3, start = c(1980, 1), frequency = 12)
+acf(sb.mo.ts)
+```
+
+
+
+#3. What is the approximate lag for the o3 at this site in Santa Barbara? Provide this in meaningful units.
+1 month! 
+
+
+```{r}
+pacf(sb.mo.ts)
+```
+
+
+#4. Interpret this plot. What does this tell us? Use internet research as appropriate.
+
+PACF describes the direct relationship between an observation and it's lag, whereas ACF is the lag between one observation and another. So this plot shows us how each observation changes as a result of its lag. This plot tells us that observations just before the month are most affected by their lag as they have the highest peaks.
+
+```{r}
+plot.ts(sb.mo.ts)
+```
+
+#5. Transform the monthly Santa Barbara o3 time series by calculating the natural log and plot the results. Which case (original or transformed) is best described by an additive model?
+```{r}
+
+o3bp <- ggplot(sb.mo, aes(x=sb.mo$mo, y=sb.mo$o3)) + geom_boxplot()
+lno3bp <- ggplot(sb.mo, aes(x=sb.mo$mo, y=log(sb.mo$o3))) + geom_boxplot()
+o3bp
+lno3bp
+
+o3lm <- lm(sb.mo$o3 ~ sb.mo$mo + sb.mo$yr)
+lno3lm <- lm(log(sb.mo$o3) ~ sb.mo$mo + sb.mo$yr)
+
+summary(o3lm)
+summary(lno3lm)
+
+o3lmlist <- list(o3 = o3lm, lno3 = lno3lm)
+
+
+plot(o3lm)
+plot(lno3lm)
+
+##the transform is more normal, the residuals for both are good. But based on normality, the transform data is better
+
+lms.stats <- mapply(glance, o3lmlist)
+colnames(lms.stats) <- names(o3lmlist)
+lms.stats
+
+##the transform has such a better AIC that i'm shocked, and the adjusted R-squared is better :)
+
+```
+
+
+
+
+```{r}
+sb.components <- decompose(sb.mo.ts, type = "additive")
+plot(sb.components)
+
+str(sb.components)
+
+class(sb.components)
+```
+
+
+##6. What class is the resulting object from applying decompose()? What does it contain?
+class: decomposed.ts, a decomposed time series; it uses moving averages to chop up a time series into seasonal, trend, and irregular components using moving averages. The plot of the decomposition shows how the data oscillates according to these different categories.
+
+```{r}
+lagged.sb <- stats::lag(sb.mo.ts, 1)
+plot(lagged.sb)
+```
+```{r}
+sb.adj <- sb.mo.ts - sb.components$seasonal
+plot(sb.mo.ts)
+lines(sb.adj, col = "red")
+```
+
+
+```{r}
+plot(sb.mo.ts, xlim = c(2005,2010))
+lines(sb.adj, col = "red")
+```
+
+
+##7. Assess the additive model performance. How well did it adjust for seasonality in Santa Barbara o3? Show your steps
+
+```{r}
+#;.; idk im so tired.. I don't understand this question..
+
+slno3lm <- lm(sb.adj ~ sb.mo$mo + sb.mo$yr)
+
+lmlist <- list(season = slno3lm, lno3 = lno3lm)
+
+lms.stats <- mapply(glance, lmlist)
+colnames(lms.stats) <- names(lmlist)
+lms.stats
+
+#bad.. it's not good. the transformed data is better than the model that is adjusted for seasonality.
+
+```
+
+
+
+#8. What can you conclude about the appropriateness of the Seasonal Mann-Kendall test for trend for this case?
+It is not appropriate because as it says in the hw assignment "The Seasonal Kendall test is not informative when trends for different months differ in sign." There are postive and negative trends in the dataset.
+
+#9. What are the trends in monthly Ozone across California from 1980 - 2011? Compare trends between different air quality basins. Show your work and justify your statistical assumptions.
+In failing to do this i've failed myself.. i misjudged this homework and left it too late
